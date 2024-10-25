@@ -1,0 +1,218 @@
+
+	ORG	$8000
+LOCK	DC.B	0			*Variabile per la mutua esclusione
+POSS	DC.B	0			*Indica chi possiede la risorsa (1 se è di B, 2 se è di C, 0 libera)
+
+BICHAR	DC.B	0			*B Index Character: indice (e contatore) dei caratteri del singolo messaggio ricevuti da B.
+BIMSG	DC.B	0			*B Index Message: indice (e contatore) dei messaggi ricevuti da B nell'iterazione.
+BMSG	DS.W	1			*B Message: buffer dove memorizzare temporaneamente i caratteri del messaggio ricevuti da B.
+
+CICHAR	DC.B	0			*C Index Character: indice (e contatore) dei caratteri del singolo messaggio ricevuti da C.
+CIMSG	DC.B	0			*C Index Message: indice (e contatore) dei messaggi ricevuti da C nell'iterazione.
+CMSG	DC.W	1			*C Message: buffer dove memorizzare temporaneamente i caratteri del messaggio ricevuti da C.
+
+RCVMSG	DC.B	0			*Received Messages: contatore dei messaggi ricevuti in una certa iterazione.
+ITER	DC.B 	0			*Iterazioni: contatore delle iterazioni terminate.
+
+BMAXMSG	DC.B	2			*B Max Messages: indica il numero massimo di messaggi inviabili da B in una iterazione.
+CMAXMSG	DC.B	1			*C Max Messages: indica il numero massimo di messaggi inviabili da C in una iterazione.
+K		DC.B	4			*Numero delle iterazioni da svolgere
+N		DC.B	2			*Numero di caratteri di cui è composto un messaggio
+
+STACKMSG	DS.W	12		*Stack Messages: area di memoria dove verranno memorizzati i messaggi completi. K*(BMAXMSG+CMAXMSG)
+IMSG	DC.B	0			*Index Message: indice (e contatore) dei messaggi memorizzati in Stack Messages.
+
+CPIAD	EQU	$2004			*C PIA Dato/Direzione
+CPIAC	EQU	$2005			*C PIA Controllo
+
+BPIAD	EQU	$2008			*B PIA Dato/Direzione
+BPIAC	EQU	$2009			*B PIA Controllo
+
+
+	ORG	$8200
+MAIN	JSR	INITPIA			*Inizializzazione PIA
+	ANDI.W	#$D8FF,SR		*Smascheramento interrupt
+LOOP	JMP	LOOP			*Ciclo infinito
+
+
+*Inizializzazione delle due pia:
+*Reset del registro di controllo;
+*Reset del registro D (Tutti 0 -> PIA in ricezione);
+*Set dei bit del registro di controllo per abilitare la IRQ;
+	ORG	$8400
+INITPIA	MOVE.B	#$00,(BPIAC)
+	MOVE.B	#$00,(BPIAD)
+	MOVE.B	#%00100101,(BPIAC)
+*	MOVE.B	(BPIAD),D0		*Nella versione dei trasmettitori con Interrupt, fa partire immediatamente la loro ISR
+	
+	MOVE.B	#$00,(CPIAC)
+	MOVE.B	#$00,(CPIAD)
+	MOVE.B	#%00100101,(CPIAC)
+*	MOVE.B	(CPIAD),D0		*Nella versione dei trasmettitori con Interrupt, fa partire immediatamente la loro ISR
+	RTS
+	
+*HP: Il nodo C è a priorià inferiore rispetto B (PIA C sulla linea 3)
+*POSSESSO di C = 2
+*POSSESSO di B = 1
+	ORG	$8500
+CISR	TAS	LOCK			*Tentativo di accesso alla sezione critica
+	BNE	CFINE				*Se non riesce, salta a CFINE (C FINE)->Sospensione
+	CMPI.B	#1,POSS			*Se riesce ad accedere, deve controllare il possesso. POSS = 1 indica che attualmente c'è B attivo.
+	BEQ	CFINE				*Se B è attivo, salta a CFINE (C FINE)->Sospensione
+	MOVE.B	#2,POSS			*Se B non è attivo, setta il possesso a C
+	MOVE.B	#0,LOCK			*Libera la sezione critica (serve solo per l'accesso alla variabile POSS)
+	MOVE.L	D0,-(SP)		*Salva il registro D0 perché verrà utilizzato
+	MOVE.B	CIMSG,D0		*Sposta CIMSG (C Index Message) in D0
+	CMP.B	CMAXMSG,D0		*Controlla CMAXMSG (serve a controllare se C ha inviato tutti i messaggi dell'iterazione)
+	BNE	CELSEREAD			*Se C NON ha inviato tutti i messaggi dell'iterazione, salta all'handler per la lettura della PIA
+	MOVE.B	#0,POSS			*Altrimenti se C ha GIA' inviato tutti i messaggi dell'iterazione, allora libera la risorsa con POSS = 0
+							*L'operazione sopra va fatta prima del controllo su B, per evitare il deadlock.
+	ANDI.B	#%10000000,(BPIAC)		*Inoltre controlla se B è sospeso
+	BEQ	CRIPRD0				*Se non lo è, salta a CRIPRD0 (C Ripristino D0) 
+	MOVE.B	#1,POSS			*Se B è sospeso, dagli il possesso (POSS = 1)
+	JSR	BHANDLE				*Salta all'handler di B per leggerlo.
+	JMP	CRIPRD0				*Salta a C Ripristino D0, per ripristinare il registro.
+CELSEREAD	JSR	CHANDLE		*CELSEREAD: Handler principale per la lettura di C
+CRIPRD0	MOVE.L	(SP)+,D0	*Ripristino del registro D0
+CFINE	RTE				
+
+*Handler di C: legge la PIA di C e verifica se B è sospeso
+	ORG	$8700
+CHANDLE	MOVEM.L	D0-D6/A0-A1,-(SP)	*Salvataggio dei registri che verranno utilizzati
+	MOVE.B	(CPIAD),D0		*Lettura del dato dalla PIA in D0
+	MOVE.B	CICHAR,D1		*Sposto CICHAR in D1 (C Index Character)->Indice del carattere del messaggio di C
+	MOVE.B	IMSG,D2			*Sposto IMSG in D2 (Index Message)->Indice dei messaggi sullo STACK (sia C sia B)
+	MOVE.B	CIMSG,D3		*Sposto CIMSG in D3 (C Index Message) -> Indice dei messaggi ricevuti solo da C
+	MOVE.B	RCVMSG,D4		*Sposto RCVMSG in D4 (Received Message) -> Contatore del numero di messaggi ricevuti nell'iterazione attuale
+	MOVE.B	ITER,D5			*Sposto ITER in D5 (Iterazione) -> Numero dell'iterazione attuale
+	MOVE.L	#CMSG,A0		*Sposto l'indirizzo buffer del messaggio di C in A0
+	MOVE.L	#STACKMSG,A1	*Sposto l'indirizzo dello stack dei messaggi ricevuti (sia da C sia da B)
+	ADDI.B	#1,D1			*Incremento il conteggio dei caratteri ricevuti del messaggio attuale.
+	MOVE.B	D1,CICHAR		*Aggiorno la variabile CICHAR in memoria
+	CMP.B	N,D1			*Comparazione del numero di caratteri da ricevere nel messaggio con il numero di caratteri ricevuti
+	BNE	CSHIFT				*Se C non ha inviato tutti i caratteri del messaggio, salta a C SHIFT, altrimenti continua
+	MOVE.B	#0,CICHAR		*Reset del conteggio dei caratteri ricevuti da C
+	ADDI.B	#1,D3			*Incremento del conteggio dei messaggi ricevuti da C
+	MOVE.B	D3,CIMSG		*Aggiornamento del conteggio in memoria
+	OR		D0,(A0)			*Concatenazione del carattere ricevuto (contenuto in D0) col resto del messaggio (sul byte meno significativo)
+	MOVE.B	D2,D6			*Sposto IMSG (contenuto in D2) in D6, che verrà moltiplicato per 2 (byte) per ricavare lo spiazzamento in STACKMSG
+	MULU.W	#2,D6			*Moltiplicazione tra IMSG e 2 (byte) per ottenere lo spiazzamento in STACKMSG
+	MOVE.W	(A0),(A1,D6)	*Inserisco il messaggio (A0) in STACKMSG + spiazzamento calcolato sopra
+	ADDI.B	#1,D2			*Incremento il contatore dei messaggi sullo stack (IMSG)
+	MOVE.B	D2,IMSG			*Aggiorno la variabile IMSG in memoria
+	ADDI.B	#1,D4			*Incremento il contatore dei messaggi ricevuti in QUESTA iterazione
+	MOVE.B	D4,RCVMSG		*Aggiorno la variabile RCVMSG in memoria
+	CMP.B	CMAXMSG,D3		*Compara i messaggi massimi inviabili da C in questa iterazione con quelli che ha inviato
+	BNE	BSOSP				*Se C ha inviato tutti i messaggi dell'iterazione, salta a BSOSP (B Sospeso), per verificare se B è sospeso
+	CMP.B	#3,RCVMSG		*Compara i messaggi ricevuti in questa iterazione con 3 (i messaggi da ricevere)
+	BNE	BSOSP				*Se C non ha inviato il terzo (ed ultimo) messaggio dell'iterazione, salta a BSOSP (B Sospeso).
+							*Se C ha inviato il terzo ed ultimo messaggio dell'iterazione, resetta tutte le variabili:
+	MOVE.B	#0,BIMSG		*Reset BIMSG (B Index Message),
+	MOVE.B	#0,CIMSG		*Reset CIMSG (C Index Message),
+	MOVE.B	#0,BICHAR		*Reset BICHAR (B Index Character),
+	MOVE.B	#0,CICHAR		*Reset CICHAR (C Index Character),
+	MOVE.B	#0,RCVMSG		*Reset RCVMSG (Received Messages),
+	ADDI.B	#1,D5			*Incremento il contatore delle iterazioni
+	MOVE.B	D5,ITER			*Aggiorno il contatore ITER in memoria col nuovo valore.
+	CMP.B	K,D5			*Compara il numero di iterazioni svolte con quelle da svolgere.
+	BNE BSOSP				*Se non sono state effettuate tutte le iterazioni, salta a BSOSP (B Sospeso).
+	MOVE.B	#%00100100,(CPIAC) *Invece se sono state completate tutte le iterazioni, disabilita le due PIA.
+	MOVE.B	#%00100100,(BPIAC) *DISABILITO PIA B
+	JMP	CRIPRCONT			*Salta al ripristino del contesto
+BSOSP	MOVE.B	#0,POSS		*Libero la risorsa prima di controllare B, necessario per evitare il deadlock.
+	ANDI.B	#%10000000,(BPIAC)		*Controllo se B è sospeso
+	BEQ	CRIPRCONT			*Se B non è sospeso, salta a CRIPRCONT (C Ripristino Contesto)
+	MOVE.B	#1,POSS			*Se B è sospeso, assegnagli il possesso (POSS = 1)
+	JSR	BHANDLE				*e avvia l'handler di B (B Handle) per poterlo leggere.
+	JMP	CRIPRCONT			*Salta a CIRIPRCONT (C Ripristino Contesto).
+CSHIFT	LSL	#8,D0			*Effettua uno shift di 8 posizioni a sinistra di D0 (il carattere ricevuto)
+	MOVE	D0,(A0)			*Salva il carattere in memoria, nel buffer CMSG.
+CRIPRCONT	MOVEM.L	(SP)+,D0-D6/A0-A1	*Ripristina il contesto del processore prima di uscire dalla subroutine
+	RTS
+
+*HP: Il nodo B è a priorià maggiore rispetto C (PIA B sulla linea 4)
+*POSSESSO di C = 1
+*POSSESSO di B = 2
+	ORG	$8600
+BISR	TAS	LOCK			*Tentativo di accesso alla sezione critica
+	BNE	BFINE				*Se non riesce, salta a BFINE (B FINE)->Sospensione
+	CMPI.B	#2,POSS			*Se riesce ad accedere, deve controllare il possesso. POSS = 2 indica che attualmente c'è C attivo.
+	BEQ	BFINE				*Se C è attivo, salta a BFINE (B FINE)->Sospensione
+	MOVE.B	#1,POSS			*Se C non è attivo, setta il possesso a B
+	MOVE.B	#0,LOCK			*Libera la sezione critica (serve solo per l'accesso alla variabile POSS)
+	MOVE.L	D0,-(SP)		*Salva il registro D0 perché verrà utilizzato
+	MOVE.B	BIMSG,D0		*Sposta BIMSG (B Index Message) in D0
+	CMP.B	BMAXMSG,D0		*Controlla BMAXMSG (serve a controllare se B ha inviato tutti i messaggi dell'iterazione)
+	BNE	BELSEREAD			*Se B NON ha inviato tutti i messaggi dell'iterazione, salta all'handler per la lettura della PIA
+	MOVE.B	#0,POSS			*Altrimenti se B ha GIA' inviato tutti i messaggi dell'iterazione, allora libera la risorsa con POSS = 0
+*	ANDI.B	#%10000000,(CPIAC)		*B non ha bisogno di questo pezzo, se tenta di inviare un carattere di troppo, e arriva C, quest'ultimo
+*	BEQ	BRIPRD0				*non potrà mai interromperlo. Invece C riprenderà dopo che B si è sospeso per l'invio del carattere di troppo.
+*	MOVE.B	#2,POSS			*Infine, quando C finirà di inviare i caratteri del messaggio, risveglierà B.
+*	JSR	CHANDLE				*------------
+	JMP	BRIPRD0				*Salto a BRIPRD0 (B Ripristino D0) 
+BELSEREAD	JSR	BHANDLE		*BELSEREAD: Handler principale per la lettura di B
+BRIPRD0	MOVE.L	(SP)+,D0	*Ripristino del registro D0
+BFINE	*MOVE.B #0,LOCK		*Serve per liberare la risorsa nel caso il TAS fallisca (non potevo farlo prima per non modificare il CCR dopo il TAS)
+	RTE
+
+*Handler di B: legge la PIA di B e verifica se C è sospeso
+	ORG	$8800
+BHANDLE	MOVEM.L	D0-D6/A0-A1,-(SP)	*Salvataggio dei registri che verranno utilizzati
+	MOVE.B	(BPIAD),D0		*Lettura del dato dalla PIA in D0
+	MOVE.B	BICHAR,D1		*Sposto BICHAR in D1 (B Index Character)->Indice del carattere del messaggio di B
+	MOVE.B	IMSG,D2			*Sposto IMSG in D2 (Index Message)->Indice dei messaggi sullo STACK (sia C sia B)
+	MOVE.B	BIMSG,D3		*Sposto BIMSG in D3 (B Index Message) -> Indice dei messaggi ricevuti solo da B
+	MOVE.B	RCVMSG,D4		*Sposto RCVMSG in D4 (Received Message) -> Contatore del numero di messaggi ricevuti nell'iterazione attuale
+	MOVE.B	ITER,D5			*Sposto ITER in D5 (Iterazione) -> Numero dell'iterazione attuale
+	MOVE.L	#BMSG,A0		*Sposto l'indirizzo buffer del messaggio di B in A0
+	MOVE.L	#STACKMSG,A1	*Sposto l'indirizzo dello stack dei messaggi ricevuti (sia da C sia da B)
+	ADDI.B	#1,D1			*Incremento il conteggio dei caratteri ricevuti del messaggio attuale.
+	MOVE.B	D1,BICHAR		*Aggiorno la variabile BICHAR in memoria
+	CMP.B	N,D1			*Comparazione del numero di caratteri da ricevere nel messaggio con il numero di caratteri ricevuti
+	BNE		BSHIFT			*Se B non ha inviato tutti i caratteri del messaggio, salta a B SHIFT, altrimenti continua
+	MOVE.B	#0,BICHAR		*Reset del conteggio dei caratteri ricevuti da B
+	ADDI.B	#1,D3			*Incremento del conteggio dei messaggi ricevuti da B
+	MOVE.B	D3,BIMSG		*Aggiornamento del conteggio in memoria
+	OR		D0,(A0)			*Concatenazione del carattere ricevuto (contenuto in D0) col resto del messaggio (sul byte meno significativo)
+	MOVE.B	D2,D6			*Sposto IMSG (contenuto in D2) in D6, che verrà moltiplicato per 2 (byte) per ricavare lo spiazzamento in STACKMSG
+	MULU.W	#2,D6			*Moltiplicazione tra IMSG e 2 (byte) per ottenere lo spiazzamento in STACKMSG
+	MOVE.W	(A0),(A1,D6)	*Inserisco il messaggio (A0) in STACKMSG + spiazzamento calcolato sopra
+	ADDI.B	#1,D2			*Incremento il contatore dei messaggi sullo stack (IMSG)
+	MOVE.B	D2,IMSG			*Aggiorno la variabile IMSG in memoria
+	ADDI.B	#1,D4			*Incremento il contatore dei messaggi ricevuti in QUESTA iterazione
+	MOVE.B	D4,RCVMSG		*Aggiorno la variabile RCVMSG in memoria
+	CMP.B	BMAXMSG,D3		*Compara i messaggi massimi inviabili da B in questa iterazione con quelli che ha inviato
+	BNE	CSOSP				*Se B ha inviato tutti i messaggi dell'iterazione, salta a CSOSP (C Sospeso), per verificare se C è sospeso
+	CMP.B	#3,RCVMSG		*Compara i messaggi ricevuti in questa iterazione con 3 (i messaggi da ricevere)
+	BNE	CSOSP				*Se B non ha inviato il terzo (ed ultimo) messaggio dell'iterazione, salta a CSOSP (C Sospeso).
+							*Se B ha inviato il terzo ed ultimo messaggio dell'iterazione, resetta tutte le variabili:
+	MOVE.B	#0,BIMSG		*Reset BIMSG (B Index Message),
+	MOVE.B	#0,CIMSG		*Reset CIMSG (C Index Message),
+	MOVE.B	#0,BICHAR		*Reset BICHAR (B Index Character),
+	MOVE.B	#0,CICHAR		*Reset CICHAR (C Index Character),
+	MOVE.B	#0,RCVMSG		*Reset RCVMSG (Received Messages),
+	ADDI.B	#1,D5			*Incremento il contatore delle iterazioni
+	MOVE.B	D5,ITER			*Aggiorno il contatore ITER in memoria col nuovo valore.
+	CMP.B	K,D5			*Compara il numero di iterazioni svolte con quelle da svolgere.
+	BNE BSOSP				*Se non sono state effettuate tutte le iterazioni, salta a BSOSP (B Sospeso).
+	MOVE.B	#%00100100,(CPIAC) *Invece se sono state completate tutte le iterazioni, disabilita le due PIA.
+	MOVE.B	#%00100100,(BPIAC) *DISABILITO PIA B
+	JMP	CRIPRCONT			*Salta al ripristino del contesto
+CSOSP	MOVE.B	#0,POSS		*Libero la risorsa prima di controllare C, necessario per evitare il deadlock.
+	ANDI.B	#%10000000,(CPIAC)		*Controllo se C è sospeso
+	BEQ	BRIPRCONT			*Se C non è sospeso, salta a BRIPRCONT (B Ripristino Contesto)
+	MOVE.B	#2,POSS			*Se C è sospeso, assegnagli il possesso (POSS = 2)
+	JSR	CHANDLE				*e avvia l'handler di C (C Handle) per poterlo leggere.
+	JMP	BRIPRCONT			*Salta a BIRIPRCONT (B Ripristino Contesto).
+BSHIFT	LSL	#8,D0			*Effettua uno shift di 8 posizioni a sinistra di D0 (il carattere ricevuto)
+	MOVE	D0,(A0)			*Salva il carattere in memoria, nel buffer BMSG.
+BRIPRCONT	MOVEM.L	(SP)+,D0-D6/A0-A1	*Ripristina il contesto del processore prima di uscire dalla subroutine
+	RTS
+
+
+	END MAIN
+
+
+
+
+

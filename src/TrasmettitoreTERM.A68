@@ -1,0 +1,83 @@
+	ORG	$8000
+ter	EQU		$2000
+
+PIADB	EQU	$2006
+PIACB	EQU	$2007
+
+	ORG	$8200
+INIT	JSR	INIZIALIZZA
+	MOVEA.W	#ter,A0	
+	MOVE.B	#$3F,1(A0)
+	ANDI.W	#$D8FF,SR	*maschera per le interruzioni. 
+LOOP	JMP	LOOP
+
+
+INIZIALIZZA	MOVE.B	#0,PIACB
+	MOVE.B	#$FF,PIADB
+	MOVE.B	#%00100100,PIACB
+	MOVE.B	(PIADB),D0	*Lettura fittizia
+	RTS
+	
+
+
+* ISR DELL'INTERRUZIONE DI LIVELLO 1 ( pressione tasto enter )
+
+	ORG	$8500		*Interrupt vector.
+	
+	MOVE.L		A0,-(A7)		*Salva nel supervisor stack pointer i registri
+	MOVE.L		A1,-(A7)		*usati dalla ISR.
+	MOVE.L		D0,-(A7)
+
+	MOVEA.W	#ter,A0		*A0 e A1 puntano ai dispositivi TERMINAL e
+	MOVEA.W	#PIADB,A1		*USART rispettivamente.
+
+
+wait12	MOVE.B		(A0),D0		*Preleva uno alla volta i caratteri presenti nel
+	MOVE.B		D0,(A1)		*buffer di tastiera e li trasmette all'interfaccia
+	CMPI.B		#13,D0		*seriale finchè non riconosce il tasto enter che
+	BEQ	end			*ha causato l'interruzione.
+
+end	MOVE.B		#$3f,1(A0)	
+
+	MOVE.L		(A7)+,D0		Ripristino dei registri
+	MOVE.L		(A7)+,A1		precedentemente salvati.
+	MOVE.L		(A7)+,A0
+	RTE				Ritorno alla routine interrotta.
+	
+
+* ISR DELL'INTERRUZIONE DI LIVELLO 2 ( buffer full ) 
+	ORG		$8600
+	MOVE.L		A0,-(A7)		*Salva nel supervisor stack pointer i registri
+	MOVE.L		A1,-(A7)		*usati dalla ISR.
+	MOVE.L		D0,-(A7)
+	MOVE.L		D1,-(A7)
+
+	MOVEA.W	#ter,A0		*A0 e A1 puntano ai dispositivi TERMINAL e
+	MOVEA.W	#PIADB,A1	*PIA
+	
+	MOVE.B		#255,D0		*Inizializza contatore caratteri nel buffer.
+wait22	MOVE.B	(A0),D1		*Preleva uno alla volta i 256 caratteri presenti
+	MOVE.B	D1,(A1)			*nel buffer di tastiera e li trasmette all'interfaccia
+	DBEQ	D0,wait22
+	MOVE.B		#$3f,1(A0)
+	
+	MOVE.L		(A7)+,D1		*Ripristino dei registri
+	MOVE.L		(A7)+,D0		*precedentemente salvati.
+	MOVE.L		(A7)+,A1
+	MOVE.L		(A7)+,A0
+	RTE				*Ritorno alla routine interrotta.
+
+
+
+	end INIT
+
+
+
+
+
+
+
+
+
+
+

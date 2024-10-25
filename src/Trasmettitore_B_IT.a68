@@ -1,0 +1,51 @@
+		*AREA DATI		
+	ORG		$8000
+VETT	DC.B	1,3,5,7,9,11,13,15
+CCHAR	DC.B	0				*Contatore caratteri
+DIM		DC.B	8
+
+PIAD		EQU		$2006
+PIAC		EQU		$2007
+
+	ORG	$8100
+MAIN	JSR	INITPIA
+	MOVEA.L	#VETT,A0			*indirizzo area caratteri
+	
+	MOVE.B	CCHAR,D0			*Contatore dei caratteri inviati
+	
+	ANDI.W	#$D8FF,SR			*maschera per le interruzioni. 
+	MOVE.B	(PIAD),D1           *lettura fittizia da PRB
+	MOVE.B	(A0),(PIAD)			*carattere corrente da trasferire su bus di PIA porto B: dopo la scrittura di PRB, CB2 si abbassa
+	
+	ADD.B		#1,D0		    *incremento contatore elementi trasmessi
+LOOP  	JMP LOOP	
+	
+	ORG	$8200
+INITPIA	MOVE.B	#0,(PIAC)
+	MOVE.B	#$FF,(PIAD)
+	MOVE.B	#%00100101,(PIAC)
+	RTS
+
+*Interruzione delle letture fittizie ad indirizzo 0x6C
+	ORG	$8300
+PIARCV	RTE
+
+*Interruzione ACK ad indirizzo 0x70 in ROM
+	ORG	$8400
+PIAISR	MOVE.B	(PIAD),D1		*lettura fittizia da PRB
+	MOVE.B	(A0,D0),(PIAD)		*carattere corrente da trasferire su bus di PIA porto B: dopo la scrittura di PRB, CB2 si abbassa
+	ADDI.b	#1,D0
+	CMP.B	DIM,D0				*compara la dimensione del messaggio con D0
+	BNE	ISRFINE
+	MOVE.B	#%00100100,(PIAC)	*Disabilito interruzioni PIA
+ISRFINE	RTE
+
+	END MAIN		
+
+
+
+
+
+
+
+
