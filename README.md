@@ -7,6 +7,28 @@ Questo repository contiene un progetto scritto in Assembly che implementa un sis
 * CBB
   
 L'implementazione utilizza un sistema di lock nel nodo A per garantire che i caratteri siano ricevuti in quest'ordine prefissato, mantenendo la consistenza ed evitare situazioni di deadlock.
+## Configurazione della memoria
+M68k 1: C <br />
+M68k 4: B <br />
+M68k 7: A
+
+Indirizzi delle ISR del ricevitore: <br />
+CISR: $8500 in 0x6C <br />
+BISR: $8600 in 0x70
+
+Contenuto RAM con test case: <br />
+1) BBC <br />
+2) BCB <br />
+3) CBB
+
+Indirizzi dei device (versione terminale IT): <br />
+Terminale 0xB e 0xC: <br />
+Interrupt Enter: $8500 in 0x64 <br />
+Interrupt buffer pieno: $8600 in 0x68
+
+Trasmettitori con ACK PIA: <br />
+$8300 in 0x6C <br />
+$8400 in 0x70
 
 ## Struttura del Progetto
 `RicevitoreA.a68`: Implementa la logica del nodo ricevitore A che deve garantire la sequenza prestabilita di messaggi. <br />
